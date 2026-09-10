@@ -7,10 +7,11 @@ on:
         description: "Kernel source repo URL for marble (Melt Kernel). Paste any git URL here to override the default."
         required: true
         type: choice
-        default: "https://github.com/yudharn/Pzqqt-Melt-Rebase"
+        default: "https://github.com/Pzqqt/android_kernel_xiaomi_marble"
         options:
           - https://github.com/yudharn/Pzqqt-Melt-Rebase
           - https://github.com/Yudharmdn/Guxin12-Melt-Rebase
+          - https://github.com/Pzqqt/android_kernel_xiaomi_marble
 
       kernel_branch:
         description: "Branch on kernel_source above"
@@ -26,19 +27,19 @@ on:
         description: "Build Official-KernelSU"
         required: true
         type: boolean
-        default: false
+        default: true
 
       manager_kernelsu_next:
         description: "Build KernelSU-Next"
         required: true
         type: boolean
-        default: false
+        default: true
 
       manager_kowsu:
         description: "Build KowSU"
         required: true
         type: boolean
-        default: false
+        default: true
 
       manager_resukisu:
         description: "Build ReSukiSU"
@@ -56,7 +57,7 @@ on:
         description: "Build SukiSUUltra"
         required: true
         type: boolean
-        default: false
+        default: true
 
       custom_name:
         description: "kernel"
@@ -82,7 +83,7 @@ on:
         description: "Add BBG support"
         required: true
         type: boolean
-        default: false
+        default: true
 
       rekernel_netlink:
         description: "Add Re-Kernel support (Netlink)"
@@ -100,7 +101,7 @@ on:
         description: "Add DroidSpaces support"
         required: true
         type: boolean
-        default: false
+        default: true
 
       nomount:
         description: "Add NoMount support"
@@ -112,7 +113,7 @@ on:
         description: "Refresh ccache"
         required: true
         type: boolean
-        default: false
+        default: true
 
 
 jobs:
