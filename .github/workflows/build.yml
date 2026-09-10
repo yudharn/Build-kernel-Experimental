@@ -795,7 +795,7 @@ jobs:
            | | |
            |:---|:---|
            | 📱 Device | POCO F5 (marble) • Redmi Note 12 Turbo (marble) |
-           | 🟠 ROM Support | HyperOS 3 A16 Only |
+           | 🟠 ROM Support | HyperOS 3 A16,ColorOS,OxygenOS |
            | 🖥️ Kernel Name | ${KERNEL_NAME}
            | 🧰 Kernel Base | ${KERNEL_BASE_VERSION} |
            | 🛠️ Build Scope | ZIP |
