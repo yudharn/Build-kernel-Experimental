@@ -1,6 +1,7 @@
 name: Compile Kernel - POCO F5 (Marble)
 
 on:
+  # Manual run with configurable inputs.
   workflow_dispatch:
     inputs:
       kernel_source:
@@ -116,6 +117,33 @@ on:
         default: true
 
 
+  # GitHub cron cannot express a true rolling "every 4 days" interval.
+  # This runs once daily at 18:00 UTC (02:00 WITA), while Determine_Matrix
+  # gates actual builds to an exact 4-day cadence.
+  schedule:
+    - cron: "0 18 * * *"
+
+
+env:
+  # Effective values: workflow_dispatch inputs override these defaults.
+  EFFECTIVE_KERNEL_SOURCE: ${{ github.event_name == 'schedule' && 'https://github.com/Pzqqt/android_kernel_xiaomi_marble' || inputs.kernel_source }}
+  EFFECTIVE_KERNEL_BRANCH: ${{ github.event_name == 'schedule' && 'melt-rebase' || inputs.kernel_branch }}
+  EFFECTIVE_MANAGER_OFFICIAL_KERNELSU: ${{ github.event_name == 'schedule' && true || inputs.manager_official_kernelsu }}
+  EFFECTIVE_MANAGER_KERNELSU_NEXT: ${{ github.event_name == 'schedule' && true || inputs.manager_kernelsu_next }}
+  EFFECTIVE_MANAGER_KOWSU: ${{ github.event_name == 'schedule' && true || inputs.manager_kowsu }}
+  EFFECTIVE_MANAGER_RESUKISU: ${{ github.event_name == 'schedule' && true || inputs.manager_resukisu }}
+  EFFECTIVE_RESUKISU_COMMIT: ${{ github.event_name == 'schedule' && '' || inputs.resukisu_commit }}
+  EFFECTIVE_MANAGER_SUKISU_ULTRA: ${{ github.event_name == 'schedule' && true || inputs.manager_sukisu_ultra }}
+  EFFECTIVE_CUSTOM_NAME: ${{ github.event_name == 'schedule' && 'Melt-Rebase' || inputs.custom_name }}
+  EFFECTIVE_SUSFS: ${{ github.event_name == 'schedule' && true || inputs.susfs }}
+  EFFECTIVE_SUSFS_COMMIT: ${{ github.event_name == 'schedule' && '' || inputs.susfs_commit }}
+  EFFECTIVE_BBG: ${{ github.event_name == 'schedule' && true || inputs.BBG }}
+  EFFECTIVE_REKERNEL_NETLINK: ${{ github.event_name == 'schedule' && true || inputs.rekernel_netlink }}
+  EFFECTIVE_REKERNEL_EBPF: ${{ github.event_name == 'schedule' && true || inputs.rekernel_ebpf }}
+  EFFECTIVE_DROIDSPACES: ${{ github.event_name == 'schedule' && true || inputs.droidspaces }}
+  EFFECTIVE_NOMOUNT: ${{ github.event_name == 'schedule' && true || inputs.nomount }}
+  EFFECTIVE_CCACHE_UPDATE: ${{ github.event_name == 'schedule' && true || inputs.ccache_update }}
+
 jobs:
   Determine_Matrix:
     name: Determine which managers to build
@@ -124,16 +152,42 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      run_build: ${{ steps.set-matrix.outputs.run_build }}
     steps:
-      - name: Build matrix JSON from checked managers
+      - name: Check 4-day schedule
         id: set-matrix
         run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RUN_BUILD=true
+            echo "==> Manual workflow_dispatch detected: build is enabled."
+          else
+            # Anchor the cadence to 2026-09-11 UTC.
+            # Scheduled workflow may fire daily, but only every 4th day builds.
+            ANCHOR_DATE="2026-09-11"
+            TODAY="$(date -u +%F)"
+            ANCHOR_EPOCH="$(date -u -d "${ANCHOR_DATE}" +%s)"
+            TODAY_EPOCH="$(date -u -d "${TODAY}" +%s)"
+            DAYS_SINCE=$(( (TODAY_EPOCH - ANCHOR_EPOCH) / 86400 ))
+
+            if (( DAYS_SINCE >= 0 && DAYS_SINCE % 4 == 0 )); then
+              RUN_BUILD=true
+              echo "==> Scheduled build day: ${TODAY} (${DAYS_SINCE} days from anchor)."
+            else
+              RUN_BUILD=false
+              echo "==> Not a build day: ${TODAY} (${DAYS_SINCE} days from anchor)."
+            fi
+          fi
+
+          echo "run_build=${RUN_BUILD}" >> "$GITHUB_OUTPUT"
+
           MANAGERS=()
-          [[ "${{ inputs.manager_official_kernelsu }}" == true ]] && MANAGERS+=("Official-KernelSU")
-          [[ "${{ inputs.manager_kernelsu_next }}" == true ]] && MANAGERS+=("KernelSU-Next")
-          [[ "${{ inputs.manager_kowsu }}" == true ]] && MANAGERS+=("KowSU")
-          [[ "${{ inputs.manager_resukisu }}" == true ]] && MANAGERS+=("ReSukiSU")
-          [[ "${{ inputs.manager_sukisu_ultra }}" == true ]] && MANAGERS+=("SukiSUUltra")
+          [[ "${{ env.EFFECTIVE_MANAGER_OFFICIAL_KERNELSU }}" == true ]] && MANAGERS+=("Official-KernelSU")
+          [[ "${{ env.EFFECTIVE_MANAGER_KERNELSU_NEXT }}" == true ]] && MANAGERS+=("KernelSU-Next")
+          [[ "${{ env.EFFECTIVE_MANAGER_KOWSU }}" == true ]] && MANAGERS+=("KowSU")
+          [[ "${{ env.EFFECTIVE_MANAGER_RESUKISU }}" == true ]] && MANAGERS+=("ReSukiSU")
+          [[ "${{ env.EFFECTIVE_MANAGER_SUKISU_ULTRA }}" == true ]] && MANAGERS+=("SukiSUUltra")
 
           if [[ ${#MANAGERS[@]} -eq 0 ]]; then
             echo "::error::No manager checked — tick at least one manager_* checkbox before running this workflow."
@@ -146,6 +200,7 @@ jobs:
 
   Build_Kernel_Marble:
     needs: Determine_Matrix
+    if: ${{ needs.Determine_Matrix.outputs.run_build == 'true' }}
     name: Build Kernel (${{ matrix.ksu_type }})
     strategy:
       fail-fast: false
@@ -202,15 +257,15 @@ jobs:
 
       - name: Clone Kernel Source
         run: |
-          git clone --depth=1 -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
+          git clone --depth=1 -b ${{ env.EFFECTIVE_KERNEL_BRANCH }} ${{ env.EFFECTIVE_KERNEL_SOURCE }} ${SOC}
           cd ${SOC}
           KERNEL_COMMIT=$(git rev-parse --short HEAD)
           echo "KERNEL_COMMIT=${KERNEL_COMMIT}" >> $GITHUB_ENV
-          KERNEL_SOURCE_WEB="${{ inputs.kernel_source }}"
+          KERNEL_SOURCE_WEB="${{ env.EFFECTIVE_KERNEL_SOURCE }}"
           KERNEL_SOURCE_WEB="${KERNEL_SOURCE_WEB%.git}"
           KERNEL_COMMIT_URL="${KERNEL_SOURCE_WEB}/commit/${KERNEL_COMMIT}"
           echo "KERNEL_COMMIT_URL=${KERNEL_COMMIT_URL}" >> $GITHUB_ENV
-          echo "==> Kernel source: using latest commit ${KERNEL_COMMIT} on branch ${{ inputs.kernel_branch }} (${KERNEL_COMMIT_URL})"
+          echo "==> Kernel source: using latest commit ${KERNEL_COMMIT} on branch ${{ env.EFFECTIVE_KERNEL_BRANCH }} (${KERNEL_COMMIT_URL})"
 
           KVER=$(grep -m1 '^VERSION = ' Makefile | awk '{print $3}')
           KPATCHLEVEL=$(grep -m1 '^PATCHLEVEL = ' Makefile | awk '{print $3}')
@@ -280,7 +335,7 @@ jobs:
         run: |
           echo "CCACHE_DIR=$HOME/.ccache_marble" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_DROIDSPACES }}" == true ]]; then
             CCACHE_REAL_KEY=${CCACHE_KEY}-Droidspaces
           else
             CCACHE_REAL_KEY=${CCACHE_KEY}-none
@@ -288,21 +343,21 @@ jobs:
           echo "CCACHE_REAL_KEY=$CCACHE_REAL_KEY" >> $GITHUB_ENV
 
       - name: Purge old ccache (on refresh)
-        if: ${{ inputs.ccache_update }}
+        if: ${{ env.EFFECTIVE_CCACHE_UPDATE }}
         continue-on-error: true
         run: |
           echo "Deleting old repo ccache to force a fresh save..."
-          gh cache delete "${CCACHE_REAL_KEY}-${{ runner.os }}-${{ inputs.kernel_branch }}-${{ matrix.ksu_type }}" -R ${{ github.repository }} || echo "No old ccache to delete"
+          gh cache delete "${CCACHE_REAL_KEY}-${{ runner.os }}-${{ env.EFFECTIVE_KERNEL_BRANCH }}-${{ matrix.ksu_type }}" -R ${{ github.repository }} || echo "No old ccache to delete"
 
       - name: Restore ccache
-        if: ${{ !inputs.ccache_update }}
+        if: ${{ !env.EFFECTIVE_CCACHE_UPDATE }}
         uses: actions/cache/restore@v6
         id: ccache-restore
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ inputs.kernel_branch }}-${{ matrix.ksu_type }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.EFFECTIVE_KERNEL_BRANCH }}-${{ matrix.ksu_type }}
           restore-keys: |
-            ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ inputs.kernel_branch }}-
+            ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.EFFECTIVE_KERNEL_BRANCH }}-
             ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-
             ${{ env.CCACHE_REAL_KEY }}-
 
@@ -344,8 +399,8 @@ jobs:
           echo "ccache status before build:"
           ccache -s
 
-          if [[ -n "${{ inputs.custom_name }}" ]]; then
-            KERNEL_NAME="${{ inputs.custom_name }}"
+          if [[ -n "${{ env.EFFECTIVE_CUSTOM_NAME }}" ]]; then
+            KERNEL_NAME="${{ env.EFFECTIVE_CUSTOM_NAME }}"
           else
             KERNEL_NAME="${{ matrix.ksu_type }}"
           fi
@@ -370,7 +425,7 @@ jobs:
               ;;
 
             "KernelSU-Next")
-              if [[ "${{ inputs.susfs }}" == true ]]; then
+              if [[ "${{ env.EFFECTIVE_SUSFS }}" == true ]]; then
                 curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
               else
                 curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
@@ -378,9 +433,9 @@ jobs:
               ;;
 
             "ReSukiSU")
-              if [[ -n "${{ inputs.resukisu_commit }}" ]]; then
-                echo "==> ReSukiSU: using custom commit/tag ${{ inputs.resukisu_commit }}"
-                curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "${{ inputs.resukisu_commit }}"
+              if [[ -n "${{ env.EFFECTIVE_RESUKISU_COMMIT }}" ]]; then
+                echo "==> ReSukiSU: using custom commit/tag ${{ env.EFFECTIVE_RESUKISU_COMMIT }}"
+                curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "${{ env.EFFECTIVE_RESUKISU_COMMIT }}"
               else
                 echo "==> ReSukiSU: using latest commit on main"
                 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
@@ -414,11 +469,11 @@ jobs:
             echo "KSU_MANAGER_COMMIT_URL=${KSU_MANAGER_COMMIT_URL}" >> $GITHUB_ENV
           fi
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
-            if [[ -n "${{ inputs.susfs_commit }}" ]]; then
+          if [[ "${{ env.EFFECTIVE_SUSFS }}" == true ]]; then
+            if [[ -n "${{ env.EFFECTIVE_SUSFS_COMMIT }}" ]]; then
               git clone -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
               cd susfs
-              git checkout "${{ inputs.susfs_commit }}"
+              git checkout "${{ env.EFFECTIVE_SUSFS_COMMIT }}"
               SUSFS_COMMIT=$(git rev-parse --short HEAD)
               echo "SUSFS_COMMIT=${SUSFS_COMMIT}" >> $GITHUB_ENV
               SUSFS_COMMIT_URL="https://gitlab.com/simonpunk/susfs4ksu/-/commit/${SUSFS_COMMIT}"
@@ -449,9 +504,9 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> arch/arm64/configs/marble_defconfig
           fi
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_NOMOUNT }}" == true ]]; then
             echo "::group::NoMount integration"
-            if [[ "${{ inputs.susfs }}" == true ]]; then
+            if [[ "${{ env.EFFECTIVE_SUSFS }}" == true ]]; then
               echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
             fi
 
@@ -474,24 +529,24 @@ jobs:
             echo "::endgroup::"
           fi
 
-          if [[ "${{ inputs.BBG }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_BBG }}" == true ]]; then
             wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
             echo "CONFIG_BBG=y" >> arch/arm64/configs/marble_defconfig
             sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           fi
 
-          if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_REKERNEL_NETLINK }}" == true ]]; then
             git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
             bash rekernel-src/Integrate/patches.sh
             echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/marble_defconfig
             echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/marble_defconfig
           fi
 
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_REKERNEL_EBPF }}" == true ]]; then
             echo "==> Re-Kernel eBPF selected; will build after the kernel Image is ready."
           fi
 
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_DROIDSPACES }}" == true ]]; then
             echo "::group::DroidSpaces integration"
             apply_droidspaces_patch() {
               local patch_file="$1" label="$2"
@@ -560,10 +615,10 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ inputs.kernel_branch }}-${{ matrix.ksu_type }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.EFFECTIVE_KERNEL_BRANCH }}-${{ matrix.ksu_type }}
 
       - name: Build Re-Kernel (eBPF)
-        if: ${{ inputs.rekernel_ebpf }}
+        if: ${{ env.EFFECTIVE_REKERNEL_EBPF }}
         run: |
           set -e
 
@@ -601,15 +656,15 @@ jobs:
         run: |
           ZIP_NAME="${KERNEL_BASE_VERSION}_${KERNEL_NAME}_${{ matrix.ksu_type }}"
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_SUSFS }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}_SuSFS"
           fi
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_NOMOUNT }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}_NoMount"
           fi
 
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_REKERNEL_EBPF }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}_eBPF"
           fi
 
@@ -740,37 +795,37 @@ jobs:
             exit 1
           fi
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_SUSFS }}" == true ]]; then
             susfs_checkbox="Supported (susfs4ksu@[${SUSFS_COMMIT}](${SUSFS_COMMIT_URL}))"
           else
             susfs_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.BBG }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_BBG }}" == true ]]; then
             bbg_checkbox="Supported"
           else
             bbg_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_REKERNEL_NETLINK }}" == true ]]; then
             rekernel_netlink_checkbox="Supported"
           else
             rekernel_netlink_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_REKERNEL_EBPF }}" == true ]]; then
             rekernel_ebpf_checkbox="Supported (daemon+prog attached as release assets)"
           else
             rekernel_ebpf_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_DROIDSPACES }}" == true ]]; then
             droidspaces_checkbox="Supported"
           else
             droidspaces_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.EFFECTIVE_NOMOUNT }}" == true ]]; then
             if [[ -n "$NOMOUNT_COMMIT" ]]; then
               nomount_checkbox="Supported (nomount@[${NOMOUNT_COMMIT}](${NOMOUNT_COMMIT_URL}))"
             else
@@ -792,8 +847,8 @@ jobs:
            | 🖥️ Kernel Name | ${KERNEL_NAME}
            | 🧰 Kernel Base | ${KERNEL_BASE_VERSION} |
            | 🛠️ Build Scope | ZIP |
-           | 📦 Source | ${{ inputs.kernel_source }} |
-           | 🔗 Kernel branch | ${{ inputs.kernel_branch }}@[${KERNEL_COMMIT}](${KERNEL_COMMIT_URL})
+           | 📦 Source | ${{ env.EFFECTIVE_KERNEL_SOURCE }} |
+           | 🔗 Kernel branch | ${{ env.EFFECTIVE_KERNEL_BRANCH }}@[${KERNEL_COMMIT}](${KERNEL_COMMIT_URL})
            | 🔧 SuSFS Version | ${susfs_checkbox} 
            | ⚙️ BBG Patch | ${bbg_checkbox} 
            | ⚙️ Re-Kernel (Netlink) | ${rekernel_netlink_checkbox}
@@ -812,6 +867,7 @@ jobs:
 
            ---
           " "${ASSETS[@]}"
+
 
 
 
