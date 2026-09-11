@@ -73,8 +73,8 @@ on:
         type: boolean
         default: false
 
-      lite_build:
-        description: "Lite build — core features only (SuSFS, NoMount, Re-Kernel Netlink, Re-Kernel eBPF); BBG and DroidSpaces stay off"
+      core_build:
+        description: "Core build — the essentials (SuSFS, NoMount, Re-Kernel Netlink, Re-Kernel eBPF); BBG and DroidSpaces stay off"
         required: true
         type: boolean
         default: false
@@ -126,10 +126,10 @@ jobs:
         run: |
           MODES=()
           [[ "${{ inputs.full_build }}" == true ]] && MODES+=("FULL")
-          [[ "${{ inputs.lite_build }}" == true ]] && MODES+=("LITE")
+          [[ "${{ inputs.core_build }}" == true ]] && MODES+=("CORE")
 
           if [[ ${#MODES[@]} -eq 0 ]]; then
-            echo "::error::Neither Full nor Lite is ticked — tick at least one build mode before running this workflow."
+            echo "::error::Neither Full nor Core is ticked — tick at least one build mode before running this workflow."
             exit 1
           fi
 
@@ -816,7 +816,7 @@ jobs:
 
           MODES_SELECTED=()
           [[ "${{ inputs.full_build }}" == true ]] && MODES_SELECTED+=("FULL")
-          [[ "${{ inputs.lite_build }}" == true ]] && MODES_SELECTED+=("LITE")
+          [[ "${{ inputs.core_build }}" == true ]] && MODES_SELECTED+=("CORE")
           MODES_LABEL=""
           for m in "${MODES_SELECTED[@]}"; do
             if [[ -z "$MODES_LABEL" ]]; then
@@ -869,14 +869,14 @@ jobs:
 
            ---
 
-           ### 🧬 Full vs Lite
+           ### 🧬 Full vs Core
 
-           SuSFS, NoMount, dan Re-Kernel (Netlink+eBPF) aktif di semua zip pada rilis ini. BBG dan DroidSpaces cuma ada di build **FULL** — cek kolom Mode di tabel manager di bawah buat tahu zip mana yang FULL / LITE.
+           SuSFS, NoMount, dan Re-Kernel (Netlink+eBPF) aktif di semua zip pada rilis ini. BBG dan DroidSpaces cuma ada di build **FULL** — cek kolom Mode di tabel manager di bawah buat tahu zip mana yang FULL / CORE.
 
            | Mode | SuSFS | NoMount | BBG | Re-Kernel Netlink | Re-Kernel eBPF | DroidSpaces |
            |:---|:---:|:---:|:---:|:---:|:---:|:---:|
            | **FULL** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-           | **LITE** | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+           | **CORE** | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 
            ---
 
