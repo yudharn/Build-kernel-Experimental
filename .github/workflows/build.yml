@@ -679,7 +679,7 @@ jobs:
             ZIP_NAME="${ZIP_NAME}-NoMount"
           fi
 
-          ZIP_NAME="${ZIP_NAME}-${{ matrix.build_mode }}"
+          ZIP_NAME="${{ matrix.build_mode }}-${ZIP_NAME}"
 
           ZIP_NAME="${ZIP_NAME}-$(date -u +"%Y%m%d")"
           git clone --depth=1 -b Anykernel3 https://github.com/yudharn/AnyKernel3 AnyKernel3
