@@ -57,7 +57,7 @@ on:
         description: "Build SukiSUUltra"
         required: true
         type: boolean
-        default: true
+        default: false
 
       custom_name:
         description: "kernel"
@@ -71,13 +71,13 @@ on:
         description: "Full build — enable ALL features (SuSFS, NoMount, BBG, Re-Kernel Netlink, Re-Kernel eBPF, DroidSpaces)"
         required: true
         type: boolean
-        default: false
+        default: true
 
       core_build:
         description: "Core build — the essentials (SuSFS, NoMount, Re-Kernel Netlink, Re-Kernel eBPF); BBG and DroidSpaces stay off"
         required: true
         type: boolean
-        default: false
+        default: true
 
       susfs_commit:
         description: "Custom susfs4ksu commit, Leave empty to use the latest commit on gki-android12-5.10."
