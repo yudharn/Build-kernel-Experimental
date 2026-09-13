@@ -85,6 +85,12 @@ on:
         type: string
         default: ""
 
+      nomount_commit:
+        description: "Custom NoMount commit or tag. Leave empty to use the latest commit on master."
+        required: false
+        type: string
+        default: ""
+
       ccache_update:
         description: "Refresh ccache"
         required: true
@@ -522,7 +528,13 @@ jobs:
           if [[ "${{ env.NOMOUNT }}" == true ]]; then
             echo "::group::NoMount integration"
 
-            curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s master
+            if [[ -n "${{ inputs.nomount_commit }}" ]]; then
+              echo "==> NoMount: using custom commit/tag ${{ inputs.nomount_commit }}"
+              curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s "${{ inputs.nomount_commit }}"
+            else
+              echo "==> NoMount: using latest commit on master"
+              curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s master
+            fi
 
             if [[ -d "NoMount/.git" ]]; then
               NOMOUNT_COMMIT=$(cd NoMount && git rev-parse --short HEAD 2>/dev/null || echo "")
@@ -530,7 +542,7 @@ jobs:
               NOMOUNT_COMMIT_URL="${NOMOUNT_REPO_URL}/commit/${NOMOUNT_COMMIT}"
               echo "NOMOUNT_COMMIT=${NOMOUNT_COMMIT}" >> $GITHUB_ENV
               echo "NOMOUNT_COMMIT_URL=${NOMOUNT_COMMIT_URL}" >> $GITHUB_ENV
-              echo "==> NoMount: using commit ${NOMOUNT_COMMIT} on branch dev (${NOMOUNT_COMMIT_URL})"
+              echo "==> NoMount: using commit ${NOMOUNT_COMMIT} (${NOMOUNT_COMMIT_URL})"
 
               NOMOUNT_VERSION_TAG=$(sed -n 's/^version=\(.*\)$/\1/p' NoMount/module/module.prop 2>/dev/null | head -n1)
               echo "NOMOUNT_VERSION_TAG=${NOMOUNT_VERSION_TAG:-unknown}" >> $GITHUB_ENV
