@@ -51,7 +51,7 @@ on:
         description: "Custom ReSukiSU commit or tag. Leave empty to use the latest commit on main."
         required: false
         type: string
-        default: "f1dd81dc96d7f3f6691e6ac8b50fba9ae8a2f17c"
+        default: ""
 
       manager_sukisu_ultra:
         description: "Build SukiSUUltra"
@@ -83,7 +83,7 @@ on:
         description: "Custom susfs4ksu commit, Leave empty to use the latest commit on gki-android12-5.10."
         required: false
         type: string
-        default: "721c76e73b1154baddce1b94e9693e56a4ab44f3"
+        default: ""
 
       ccache_update:
         description: "Refresh ccache"
@@ -411,6 +411,8 @@ jobs:
                 echo "==> ReSukiSU: using latest commit on main"
                 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
               fi
+              echo "==> ReSukiSU: pulling submodules"
+              bash ./KernelSU/kernel/setup.sh --submodule
               ;;
 
             "SukiSUUltra")
@@ -669,7 +671,7 @@ jobs:
 
       - name: Make AnyKernel3
         run: |
-          ZIP_NAME="${KERNEL_BASE_VERSION}-${KERNEL_NAME}-${{ matrix.ksu_type }}"
+          ZIP_NAME="${KERNEL_NAME}-${{ matrix.ksu_type }}-${{ matrix.build_mode }}"
 
           if [[ "${{ env.SUSFS }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}-SuSFS"
@@ -679,9 +681,8 @@ jobs:
             ZIP_NAME="${ZIP_NAME}-NoMount"
           fi
 
-          ZIP_NAME="${{ matrix.build_mode }}-${ZIP_NAME}"
+          ZIP_NAME="${ZIP_NAME}-${KERNEL_BASE_VERSION}"
 
-          ZIP_NAME="${ZIP_NAME}-$(date -u +"%Y%m%d")"
           git clone --depth=1 -b Anykernel3 https://github.com/yudharn/AnyKernel3 AnyKernel3
 
           (cd ${SOC}/out/arch/arm64/boot && 7z a "${GITHUB_WORKSPACE}/AnyKernel3/Image.7z" Image)
@@ -763,6 +764,10 @@ jobs:
           FIRST=true
           FOUND_ANY=false
 
+          declare -A ROW_VERSION
+          declare -A ROW_MODES
+          ORDERED_TYPES=()
+
           while IFS= read -r META; do
             FOUND_ANY=true
             dir="$(dirname "$META")/"
@@ -796,8 +801,14 @@ jobs:
             else
               ksu_row_version="${KSU_MANAGER_VERSION}"
             fi
-            NOTES_ROWS="${NOTES_ROWS}
-           | ${KSU_TYPE} | ${BUILD_MODE_LEG} | ${ksu_row_version} | ${ZIP_NAME} |"
+
+            if [[ -z "${ROW_MODES[$KSU_TYPE]+x}" ]]; then
+              ORDERED_TYPES+=("$KSU_TYPE")
+              ROW_VERSION["$KSU_TYPE"]="$ksu_row_version"
+              ROW_MODES["$KSU_TYPE"]="$BUILD_MODE_LEG"
+            else
+              ROW_MODES["$KSU_TYPE"]="${ROW_MODES[$KSU_TYPE]},${BUILD_MODE_LEG}"
+            fi
 
             if [[ "$EBPF_DONE" == false && -f "${dir}rekernel.bpf.o" ]]; then
               ASSETS+=("${dir}rekernel.bpf.o" "${dir}rekerneld_aarch64")
@@ -808,6 +819,17 @@ jobs:
           if [[ "$FOUND_ANY" == false ]]; then
             echo "::warning::No metadata.json found anywhere under artifacts/, skipping"
           fi
+
+          for KSU_TYPE in "${ORDERED_TYPES[@]}"; do
+            MODES_RAW="${ROW_MODES[$KSU_TYPE]}"
+            if [[ "$MODES_RAW" == *"FULL"* && "$MODES_RAW" == *"CORE"* ]]; then
+              MODE_LABEL="FULL&CORE"
+            else
+              MODE_LABEL="$MODES_RAW"
+            fi
+            NOTES_ROWS="${NOTES_ROWS}
+           | ${KSU_TYPE} | ${MODE_LABEL} | ${ROW_VERSION[$KSU_TYPE]} |"
+          done
 
           if [[ ${#ASSETS[@]} -eq 0 ]]; then
             echo "::error::No successful builds found in any matrix leg — skipping release creation."
@@ -871,8 +893,8 @@ jobs:
 
            ### 🧬 Full vs Core
 
-           SuSFS, NoMount, dan Re-Kernel (Netlink+eBPF) aktif di semua zip pada rilis ini. BBG dan DroidSpaces cuma ada di build **FULL** — cek kolom Mode di tabel manager di bawah buat tahu zip mana yang FULL / CORE.
-
+           SuSFS, NoMount, and Re-Kernel (Netlink+eBPF) are enabled in all zip packages in this release. BBG and DroidSpaces are only available in the FULL build — check the 'Mode' column in the manager table below to see which zip is FULL or CORE.
+           
            | Mode | SuSFS | NoMount | BBG | Re-Kernel Netlink | Re-Kernel eBPF | DroidSpaces |
            |:---|:---:|:---:|:---:|:---:|:---:|:---:|
            | **FULL** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -882,9 +904,11 @@ jobs:
 
            ### 💻 KSU Managers in this build
 
-           | Manager | Mode | Version | Zip |
-           |:---|:---:|:---|:---|${NOTES_ROWS}
+           | Manager | Mode | Version |
+           |:---|:---:|:---|${NOTES_ROWS}
 
            ---
           " "${ASSETS[@]}"
+
+
           
