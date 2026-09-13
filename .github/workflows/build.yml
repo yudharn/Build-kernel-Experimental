@@ -412,7 +412,7 @@ jobs:
                 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
               fi
               echo "==> ReSukiSU: pulling submodules"
-              bash ./KernelSU/kernel/setup.sh --submodule
+              env -u CI -u GITHUB_ACTIONS bash ./KernelSU/kernel/setup.sh --submodule
               ;;
 
             "SukiSUUltra")
