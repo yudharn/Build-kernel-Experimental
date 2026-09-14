@@ -506,6 +506,15 @@ jobs:
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
 
+            # Fix: some susfs4ksu fs/susfs.c revisions call security_sb_statfs()
+            # (used inside susfs_sus_kstat_spoof_vfs_statfs()) without including
+            # <linux/security.h>, which trips Clang -Werror with:
+            #   ../fs/susfs.c:284:11: error: implicit declaration of function
+            #   'security_sb_statfs'
+            # Prepend the include; harmless no-op if it's already there thanks
+            # to the header's own include guard.
+            sed -i '1i #include <linux/security.h>' ../fs/susfs.c
+
             SUSFS_VERSION_TAG=$(sed -n 's/.*SUSFS_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' kernel_patches/include/linux/susfs.h | head -n1)
             echo "SUSFS_VERSION_TAG=${SUSFS_VERSION_TAG:-unknown}" >> $GITHUB_ENV
             echo "==> SUSFS: detected version ${SUSFS_VERSION_TAG:-unknown} from susfs.h"
