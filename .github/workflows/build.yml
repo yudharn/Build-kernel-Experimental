@@ -704,7 +704,31 @@ jobs:
 
             if [[ "$LZ4KD_APPLIED" == true ]]; then
               # Force lz4kd to win any vendor init.rc comp_algorithm race at disksize_store() time.
-              ZRAM_FORCE_DEFAULT_PATCH=$(cat << 'PATCHEOF'
+              ZRAM_FORCE_DEFAULT_LINES=(
+                '--- a/drivers/block/zram/zram_drv.c'
+                '+++ b/drivers/block/zram/zram_drv.c'
+                '@@ -1768,6 +1768,19 @@ static ssize_t disksize_store(struct device *dev,'
+                ' 		goto out_unlock;'
+                ' 	}'
+                ' '
+                '+#ifdef CONFIG_ZRAM_DEF_COMP_LZ4KD'
+                '+	/*'
+                '+	 * Some vendor init.rc scripts write their own preferred algorithm to'
+                '+	 * comp_algorithm during early boot -- still legal at this point,'
+                '+	 * since it happens before init_done(zram) is set. Whatever string is'
+                '+	 * in zram->compressor right as zcomp_create() below runs becomes'
+                "+	 * permanent for this device's lifetime, so re-assert our"
+                '+	 * compile-time default one last time, here, to win regardless of'
+                '+	 * how many earlier writes raced it.'
+                '+	 */'
+                '+	strscpy(zram->compressor, default_compressor, sizeof(zram->compressor));'
+                '+#endif'
+                '+'
+                ' 	comp = zcomp_create(zram->compressor);'
+                ' 	if (IS_ERR(comp)) {'
+                ' 		pr_err("Cannot initialise %s compressing backend\n",'
+              )
+              ZRAM_FORCE_DEFAULT_PATCH=$(printf '%s\n' "${ZRAM_FORCE_DEFAULT_LINES[@]}")
 
               if echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
                 echo "==> LZ4KD: zram force-default patch already applied, skipping"
