@@ -514,7 +514,14 @@ jobs:
             cp ./kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ..
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
-            
+
+            # Fix: some susfs4ksu fs/susfs.c revisions call security_sb_statfs()
+            # (used inside susfs_sus_kstat_spoof_vfs_statfs()) without including
+            # <linux/security.h>, which trips Clang -Werror with:
+            #   ../fs/susfs.c:284:11: error: implicit declaration of function
+            #   'security_sb_statfs'
+            # Prepend the include; harmless no-op if it's already there thanks
+            # to the header's own include guard.
             sed -i '1i #include <linux/security.h>' ../fs/susfs.c
 
             SUSFS_VERSION_TAG=$(sed -n 's/.*SUSFS_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' kernel_patches/include/linux/susfs.h | head -n1)
@@ -524,6 +531,15 @@ jobs:
             cd ..
             patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
 
+            # Fix: the upstream gki-android12-5.10 susfs patch declares the
+            # susfs_is_inode_sus_kstat()/susfs_sus_kstat_spoof_vfs_statfs()
+            # externs after vfs_get_fsid(), past their first call site in
+            # susfs_statfs_by_dentry(), which trips Clang -Werror with:
+            #   ../fs/statfs.c:88:6: error: implicit declaration of function
+            #   'susfs_sus_kstat_spoof_vfs_statfs'
+            # Overwrite with pre-fixed fs/stat.c and fs/statfs.c (externs
+            # moved above the helper) until upstream fixes it.
+            # Ref: https://github.com/kaminarich/GKI-Kernel/commit/67a32d6e21fbd927913e957592f3c2960f7247a6
             cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/stat.c" fs/stat.c
             cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/statfs.c" fs/statfs.c
 
@@ -626,6 +642,7 @@ jobs:
             echo "::endgroup::"
           fi
 
+          LZ4KD_APPLIED=false
           if [[ "${{ env.LZ4KD }}" == true ]]; then
             echo "::group::LZ4KD integration (ZRAM compressor)"
 
@@ -668,47 +685,85 @@ jobs:
             # Strip the OPLUS-specific kernel/module.c hunk - it conflicts with plain GKI trees.
             LZ4KD_PATCH=$(echo "$LZ4KD_PATCH" | awk '/^diff -u a\/kernel\/module.c/{exit} {print}')
 
+            # This upstream patch is generated against SukiSU_patch's own reference 5.10 tree, not
+            # necessarily this repo's tree, so a context mismatch here is a real (not hypothetical)
+            # possibility on a heavily-forked source like Melt-Rebase. Treat it as best-effort: warn
+            # and skip LZ4KD for this run instead of failing the whole matrix build over an addon.
             if echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
               echo "==> LZ4KD: core patch already applied, skipping"
+              LZ4KD_APPLIED=true
             elif echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch > /dev/null 2>&1; then
               echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --forward --no-backup-if-mismatch \
-                || { echo "::error::LZ4KD: core patch failed to apply"; exit 1; }
+                || { echo "::error::LZ4KD: core patch failed to apply despite a clean dry-run"; exit 1; }
               echo "==> LZ4KD: core patch applied"
+              LZ4KD_APPLIED=true
             else
-              echo "::error::LZ4KD: core patch does not apply cleanly on this kernel source"
-              exit 1
-            fi
-            
-            if echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
-              echo "==> LZ4KD: zram force-default patch already applied, skipping"
-            elif echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch > /dev/null 2>&1; then
-              echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --forward --no-backup-if-mismatch \
-                || { echo "::error::LZ4KD: zram force-default patch failed to apply"; exit 1; }
-              echo "==> LZ4KD: zram force-default patch applied"
-            else
-              echo "::error::LZ4KD: zram force-default patch does not apply cleanly on this kernel source"
-              exit 1
+              echo "::warning::LZ4KD: core patch does not apply cleanly on this kernel source (zram_patch/${LZ4KD_TARGET_VER}/lz4kd.patch was likely generated against a different 5.10 base tree than Melt-Rebase). Skipping LZ4KD for this build; everything else continues normally. Dry-run rejection detail follows:"
+              echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch || true
             fi
 
-            if ! grep -q "^CONFIG_CRYPTO_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
-              echo "CONFIG_CRYPTO_LZ4HC=y" >> arch/arm64/configs/marble_defconfig
-              echo "CONFIG_CRYPTO_LZ4K=y" >> arch/arm64/configs/marble_defconfig
-              echo "CONFIG_CRYPTO_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
+            if [[ "$LZ4KD_APPLIED" == true ]]; then
+              # Force lz4kd to win any vendor init.rc comp_algorithm race at disksize_store() time.
+              ZRAM_FORCE_DEFAULT_PATCH=$(cat << 'PATCHEOF'
+          --- a/drivers/block/zram/zram_drv.c
+          +++ b/drivers/block/zram/zram_drv.c
+          @@ -1768,6 +1768,19 @@ static ssize_t disksize_store(struct device *dev,
+           		goto out_unlock;
+           	}
+           
+          +#ifdef CONFIG_ZRAM_DEF_COMP_LZ4KD
+          +	/*
+          +	 * Some vendor init.rc scripts write their own preferred algorithm to
+          +	 * comp_algorithm during early boot -- still legal at this point,
+          +	 * since it happens before init_done(zram) is set. Whatever string is
+          +	 * in zram->compressor right as zcomp_create() below runs becomes
+          +	 * permanent for this device's lifetime, so re-assert our
+          +	 * compile-time default one last time, here, to win regardless of
+          +	 * how many earlier writes raced it.
+          +	 */
+          +	strscpy(zram->compressor, default_compressor, sizeof(zram->compressor));
+          +#endif
+          +
+           	comp = zcomp_create(zram->compressor);
+           	if (IS_ERR(comp)) {
+           		pr_err("Cannot initialise %s compressing backend\n",
+          PATCHEOF
+              )
+
+              if echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
+                echo "==> LZ4KD: zram force-default patch already applied, skipping"
+              elif echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch > /dev/null 2>&1; then
+                echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --forward --no-backup-if-mismatch \
+                  || { echo "::error::LZ4KD: zram force-default patch failed to apply despite a clean dry-run"; exit 1; }
+                echo "==> LZ4KD: zram force-default patch applied"
+              else
+                echo "::warning::LZ4KD: zram force-default patch does not apply cleanly - lz4kd will still build and register, but a vendor init.rc script could still win the comp_algorithm race at boot. Dry-run rejection detail follows:"
+                echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch || true
+              fi
+
+              if ! grep -q "^CONFIG_CRYPTO_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
+                echo "CONFIG_CRYPTO_LZ4HC=y" >> arch/arm64/configs/marble_defconfig
+                echo "CONFIG_CRYPTO_LZ4K=y" >> arch/arm64/configs/marble_defconfig
+                echo "CONFIG_CRYPTO_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
+              fi
+
+              # CONFIG_ZRAM_DEF_COMP_LZ4KD selects the "lz4kd" choice member that the derived
+              # CONFIG_ZRAM_DEF_COMP string below (and the zram_drv.c #ifdef above) depend on.
+              if ! grep -q "^CONFIG_ZRAM_DEF_COMP_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
+                echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
+              fi
+
+              if ! grep -q '^CONFIG_ZRAM_DEF_COMP="lz4kd"' arch/arm64/configs/marble_defconfig; then
+                echo 'CONFIG_ZRAM_DEF_COMP="lz4kd"' >> arch/arm64/configs/marble_defconfig
+              fi
+
+              echo "==> LZ4KD: configs enabled, lz4kd set as ZRAM default compressor"
             fi
 
-            # CONFIG_ZRAM_DEF_COMP_LZ4KD selects the "lz4kd" choice member that the derived
-            # CONFIG_ZRAM_DEF_COMP string below (and the zram_drv.c #ifdef above) depend on.
-            if ! grep -q "^CONFIG_ZRAM_DEF_COMP_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
-              echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
-            fi
-
-            if ! grep -q '^CONFIG_ZRAM_DEF_COMP="lz4kd"' arch/arm64/configs/marble_defconfig; then
-              echo 'CONFIG_ZRAM_DEF_COMP="lz4kd"' >> arch/arm64/configs/marble_defconfig
-            fi
-
-            echo "==> LZ4KD: configs enabled, lz4kd set as ZRAM default compressor"
             echo "::endgroup::"
           fi
+
+          echo "LZ4KD_APPLIED=${LZ4KD_APPLIED}" >> $GITHUB_ENV
 
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
 
@@ -790,7 +845,7 @@ jobs:
             ZIP_NAME="${ZIP_NAME}-NoMount"
           fi
 
-          if [[ "${{ env.LZ4KD }}" == true ]]; then
+          if [[ "${{ env.LZ4KD_APPLIED }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}-LZ4KD"
           fi
 
@@ -829,7 +884,8 @@ jobs:
             --arg nomount_commit "${NOMOUNT_COMMIT:-}" \
             --arg nomount_commit_url "${NOMOUNT_COMMIT_URL:-}" \
             --arg nomount_version_tag "${NOMOUNT_VERSION_TAG:-}" \
-            '{ksu_type:$ksu_type,build_mode:$build_mode,kernel_name:$kernel_name,zip_name:$zip_name,ksu_manager_version:$ksu_manager_version,ksu_manager_commit:$ksu_manager_commit,ksu_manager_commit_url:$ksu_manager_commit_url,kernel_commit:$kernel_commit,kernel_commit_url:$kernel_commit_url,kernel_base_version:$kernel_base_version,clang_version:$clang_version,susfs_commit:$susfs_commit,susfs_commit_url:$susfs_commit_url,susfs_version_tag:$susfs_version_tag,nomount_commit:$nomount_commit,nomount_commit_url:$nomount_commit_url,nomount_version_tag:$nomount_version_tag}' \
+            --arg lz4kd_applied "${LZ4KD_APPLIED:-false}" \
+            '{ksu_type:$ksu_type,build_mode:$build_mode,kernel_name:$kernel_name,zip_name:$zip_name,ksu_manager_version:$ksu_manager_version,ksu_manager_commit:$ksu_manager_commit,ksu_manager_commit_url:$ksu_manager_commit_url,kernel_commit:$kernel_commit,kernel_commit_url:$kernel_commit_url,kernel_base_version:$kernel_base_version,clang_version:$clang_version,susfs_commit:$susfs_commit,susfs_commit_url:$susfs_commit_url,susfs_version_tag:$susfs_version_tag,nomount_commit:$nomount_commit,nomount_commit_url:$nomount_commit_url,nomount_version_tag:$nomount_version_tag,lz4kd_applied:$lz4kd_applied}' \
             > "${GITHUB_WORKSPACE}/metadata.json"
 
       - name: Upload build artifact
@@ -904,6 +960,7 @@ jobs:
               NOMOUNT_COMMIT=$(jq -r '.nomount_commit' "$META")
               NOMOUNT_COMMIT_URL=$(jq -r '.nomount_commit_url' "$META")
               NOMOUNT_VERSION_TAG=$(jq -r '.nomount_version_tag' "$META")
+              LZ4KD_APPLIED_ANY=$(jq -r '.lz4kd_applied' "$META")
               FIRST=false
             fi
 
@@ -970,8 +1027,10 @@ jobs:
           rekernel_netlink_checkbox="Supported"
           rekernel_ebpf_checkbox="Supported (daemon+prog attached as release assets)"
 
-          if [[ "${{ inputs.enable_lz4kd }}" == "true" ]]; then
+          if [[ "${LZ4KD_APPLIED_ANY:-false}" == "true" ]]; then
             lz4kd_checkbox="Supported (lz4kd via SukiSU_patch, ZRAM default)"
+          elif [[ "${{ inputs.enable_lz4kd }}" == "true" ]]; then
+            lz4kd_checkbox="Requested, but skipped this run (patch didn't apply cleanly - see Compile Kernel log)"
           else
             lz4kd_checkbox="Not included"
           fi
