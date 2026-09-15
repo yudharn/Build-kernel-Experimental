@@ -642,6 +642,9 @@ jobs:
             echo "::endgroup::"
           fi
 
+      - name: LZ4KD integration (ZRAM compressor)
+        working-directory: ${{ env.SOC }}
+        run: |
           LZ4KD_APPLIED=false
           if [[ "${{ env.LZ4KD }}" == true ]]; then
             echo "::group::LZ4KD integration (ZRAM compressor)"
@@ -764,6 +767,34 @@ jobs:
           fi
 
           echo "LZ4KD_APPLIED=${LZ4KD_APPLIED}" >> $GITHUB_ENV
+
+      - name: Finish kernel config and build Image
+        working-directory: ${{ env.SOC }}
+        run: |
+          # Fresh shell per step: re-derive the toolchain env the Compile Kernel step
+          # exported locally (only $GITHUB_ENV writes like CLANG_VERSION/CCACHE_DIR persist).
+          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm-toolchain/bin"
+          export PATH="${CLANG_ROOT}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="${CLANG_ROOT}/clang"
+          export CXX="${CLANG_ROOT}/clang++"
+          export HOSTCC="${CLANG_ROOT}/clang"
+          export HOSTCXX="${CLANG_ROOT}/clang++"
+          export LD="${CLANG_ROOT}/ld.lld"
+          export AR="${CLANG_ROOT}/llvm-ar"
+          export NM="${CLANG_ROOT}/llvm-nm"
+          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
+          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
+          export STRIP="${CLANG_ROOT}/llvm-strip"
+          export KBUILD_BUILD_USER="Rebuild By"
+          export KBUILD_BUILD_HOST="Yudharn"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_NOHARDLINK="true"
 
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
 
