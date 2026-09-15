@@ -546,14 +546,17 @@ jobs:
           fi
 
           if [[ "${{ env.NOMOUNT }}" == true ]]; then
-            echo "::group::NoMount integration"
+             echo "::group::NoMount integration"
+          if [[ "${{ inputs.susfs }}" == true ]]; then
+             echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
+          fi
 
             if [[ -n "${{ inputs.nomount_commit }}" ]]; then
               echo "==> NoMount: using custom commit/tag ${{ inputs.nomount_commit }}"
-              curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s "${{ inputs.nomount_commit }}"
+              curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" | bash -s "${{ inputs.nomount_commit }}"
             else
               echo "==> NoMount: using latest commit on master"
-              curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s master
+              curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" | bash -s master
             fi
 
             if [[ -d "NoMount/.git" ]]; then
