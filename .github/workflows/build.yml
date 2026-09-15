@@ -91,12 +91,6 @@ on:
         type: string
         default: ""
 
-      enable_lz4kd:
-        description: "Enable LZ4KD (ZRAM compression optimization, via SukiSU_patch)"
-        required: true
-        type: boolean
-        default: false
-
       ccache_update:
         description: "Refresh ccache"
         required: true
@@ -204,16 +198,13 @@ jobs:
             REKERNEL_EBPF=true
             DROIDSPACES=false
           fi
-          # LZ4KD is a standalone ZRAM-compressor addon, not tied to Full/Core - same for every leg.
-          LZ4KD=${{ inputs.enable_lz4kd }}
           echo "SUSFS=${SUSFS}" >> $GITHUB_ENV
           echo "NOMOUNT=${NOMOUNT}" >> $GITHUB_ENV
           echo "BBG=${BBG}" >> $GITHUB_ENV
           echo "REKERNEL_NETLINK=${REKERNEL_NETLINK}" >> $GITHUB_ENV
           echo "REKERNEL_EBPF=${REKERNEL_EBPF}" >> $GITHUB_ENV
           echo "DROIDSPACES=${DROIDSPACES}" >> $GITHUB_ENV
-          echo "LZ4KD=${LZ4KD}" >> $GITHUB_ENV
-          echo "==> [${{ matrix.ksu_type }} / ${{ matrix.build_mode }}] susfs=${SUSFS} nomount=${NOMOUNT} bbg=${BBG} rekernel_netlink=${REKERNEL_NETLINK} rekernel_ebpf=${REKERNEL_EBPF} droidspaces=${DROIDSPACES} lz4kd=${LZ4KD}"
+          echo "==> [${{ matrix.ksu_type }} / ${{ matrix.build_mode }}] susfs=${SUSFS} nomount=${NOMOUNT} bbg=${BBG} rekernel_netlink=${REKERNEL_NETLINK} rekernel_ebpf=${REKERNEL_EBPF} droidspaces=${DROIDSPACES}"
 
       - name: Setup SWAP
         uses: pierotofy/set-swap-space@master
@@ -642,160 +633,6 @@ jobs:
             echo "::endgroup::"
           fi
 
-      - name: LZ4KD integration (ZRAM compressor)
-        working-directory: ${{ env.SOC }}
-        run: |
-          LZ4KD_APPLIED=false
-          if [[ "${{ env.LZ4KD }}" == true ]]; then
-            echo "::group::LZ4KD integration (ZRAM compressor)"
-
-            LZ4KD_RAW_BASE="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/main/other/zram"
-            LZ4KD_TARGET_VER="${KERNEL_BASE_VERSION%.*}"
-            echo "==> LZ4KD: targeting zram_patch/${LZ4KD_TARGET_VER} for kernel base ${KERNEL_BASE_VERSION}"
-
-            LZ4KD_FILES=(
-              "include/linux/lz4k.h"
-              "include/linux/lz4kd.h"
-              "lib/lz4k/Makefile"
-              "lib/lz4k/lz4k_decode.c"
-              "lib/lz4k/lz4k_encode.c"
-              "lib/lz4k/lz4k_encode_private.h"
-              "lib/lz4k/lz4k_private.h"
-              "lib/lz4kd/Makefile"
-              "lib/lz4kd/lz4kd_decode.c"
-              "lib/lz4kd/lz4kd_decode_delta.c"
-              "lib/lz4kd/lz4kd_encode.c"
-              "lib/lz4kd/lz4kd_encode_delta.c"
-              "lib/lz4kd/lz4kd_encode_private.h"
-              "lib/lz4kd/lz4kd_private.h"
-              "crypto/lz4k.c"
-              "crypto/lz4kd.c"
-            )
-
-            for f in "${LZ4KD_FILES[@]}"; do
-              mkdir -p "$(dirname "$f")"
-              curl -LSs -m 15 --fail --retry 3 --retry-all-errors \
-                -o "$f" "${LZ4KD_RAW_BASE}/lz4k/${f}" \
-                || { echo "::error::LZ4KD: failed to download ${f}"; exit 1; }
-            done
-            echo "==> LZ4KD: source files staged"
-
-            LZ4KD_PATCH=$(curl -LSs -m 15 --fail --retry 3 --retry-all-errors \
-              "${LZ4KD_RAW_BASE}/zram_patch/${LZ4KD_TARGET_VER}/lz4kd.patch") \
-              || { echo "::error::LZ4KD: failed to download lz4kd.patch for ${LZ4KD_TARGET_VER}"; exit 1; }
-            [[ -n "$LZ4KD_PATCH" ]] || { echo "::error::LZ4KD: downloaded patch is empty"; exit 1; }
-
-            # Strip the OPLUS-specific kernel/module.c hunk - it conflicts with plain GKI trees.
-            LZ4KD_PATCH=$(echo "$LZ4KD_PATCH" | awk '/^diff -u a\/kernel\/module.c/{exit} {print}')
-
-            # This upstream patch is generated against SukiSU_patch's own reference 5.10 tree, not
-            # necessarily this repo's tree, so a context mismatch here is a real (not hypothetical)
-            # possibility on a heavily-forked source like Melt-Rebase. Treat it as best-effort: warn
-            # and skip LZ4KD for this run instead of failing the whole matrix build over an addon.
-            if echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
-              echo "==> LZ4KD: core patch already applied, skipping"
-              LZ4KD_APPLIED=true
-            elif echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch > /dev/null 2>&1; then
-              echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --forward --no-backup-if-mismatch \
-                || { echo "::error::LZ4KD: core patch failed to apply despite a clean dry-run"; exit 1; }
-              echo "==> LZ4KD: core patch applied"
-              LZ4KD_APPLIED=true
-            else
-              echo "::warning::LZ4KD: core patch does not apply cleanly on this kernel source (zram_patch/${LZ4KD_TARGET_VER}/lz4kd.patch was likely generated against a different 5.10 base tree than Melt-Rebase). Skipping LZ4KD for this build; everything else continues normally. Dry-run rejection detail follows:"
-              echo "$LZ4KD_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch || true
-            fi
-
-            if [[ "$LZ4KD_APPLIED" == true ]]; then
-              # Force lz4kd to win any vendor init.rc comp_algorithm race at disksize_store() time.
-              ZRAM_FORCE_DEFAULT_LINES=(
-                '--- a/drivers/block/zram/zram_drv.c'
-                '+++ b/drivers/block/zram/zram_drv.c'
-                '@@ -1768,6 +1768,19 @@ static ssize_t disksize_store(struct device *dev,'
-                ' 		goto out_unlock;'
-                ' 	}'
-                ' '
-                '+#ifdef CONFIG_ZRAM_DEF_COMP_LZ4KD'
-                '+	/*'
-                '+	 * Some vendor init.rc scripts write their own preferred algorithm to'
-                '+	 * comp_algorithm during early boot -- still legal at this point,'
-                '+	 * since it happens before init_done(zram) is set. Whatever string is'
-                '+	 * in zram->compressor right as zcomp_create() below runs becomes'
-                "+	 * permanent for this device's lifetime, so re-assert our"
-                '+	 * compile-time default one last time, here, to win regardless of'
-                '+	 * how many earlier writes raced it.'
-                '+	 */'
-                '+	strscpy(zram->compressor, default_compressor, sizeof(zram->compressor));'
-                '+#endif'
-                '+'
-                ' 	comp = zcomp_create(zram->compressor);'
-                ' 	if (IS_ERR(comp)) {'
-                ' 		pr_err("Cannot initialise %s compressing backend\n",'
-              )
-              ZRAM_FORCE_DEFAULT_PATCH=$(printf '%s\n' "${ZRAM_FORCE_DEFAULT_LINES[@]}")
-
-              if echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --reverse --no-backup-if-mismatch > /dev/null 2>&1; then
-                echo "==> LZ4KD: zram force-default patch already applied, skipping"
-              elif echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch > /dev/null 2>&1; then
-                echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --forward --no-backup-if-mismatch \
-                  || { echo "::error::LZ4KD: zram force-default patch failed to apply despite a clean dry-run"; exit 1; }
-                echo "==> LZ4KD: zram force-default patch applied"
-              else
-                echo "::warning::LZ4KD: zram force-default patch does not apply cleanly - lz4kd will still build and register, but a vendor init.rc script could still win the comp_algorithm race at boot. Dry-run rejection detail follows:"
-                echo "$ZRAM_FORCE_DEFAULT_PATCH" | patch -p1 --batch --fuzz=3 --dry-run --forward --no-backup-if-mismatch || true
-              fi
-
-              if ! grep -q "^CONFIG_CRYPTO_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
-                echo "CONFIG_CRYPTO_LZ4HC=y" >> arch/arm64/configs/marble_defconfig
-                echo "CONFIG_CRYPTO_LZ4K=y" >> arch/arm64/configs/marble_defconfig
-                echo "CONFIG_CRYPTO_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
-              fi
-
-              # CONFIG_ZRAM_DEF_COMP_LZ4KD selects the "lz4kd" choice member that the derived
-              # CONFIG_ZRAM_DEF_COMP string below (and the zram_drv.c #ifdef above) depend on.
-              if ! grep -q "^CONFIG_ZRAM_DEF_COMP_LZ4KD=y" arch/arm64/configs/marble_defconfig; then
-                echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> arch/arm64/configs/marble_defconfig
-              fi
-
-              if ! grep -q '^CONFIG_ZRAM_DEF_COMP="lz4kd"' arch/arm64/configs/marble_defconfig; then
-                echo 'CONFIG_ZRAM_DEF_COMP="lz4kd"' >> arch/arm64/configs/marble_defconfig
-              fi
-
-              echo "==> LZ4KD: configs enabled, lz4kd set as ZRAM default compressor"
-            fi
-
-            echo "::endgroup::"
-          fi
-
-          echo "LZ4KD_APPLIED=${LZ4KD_APPLIED}" >> $GITHUB_ENV
-
-      - name: Finish kernel config and build Image
-        working-directory: ${{ env.SOC }}
-        run: |
-          # Fresh shell per step: re-derive the toolchain env the Compile Kernel step
-          # exported locally (only $GITHUB_ENV writes like CLANG_VERSION/CCACHE_DIR persist).
-          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm-toolchain/bin"
-          export PATH="${CLANG_ROOT}:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
-          export CC="${CLANG_ROOT}/clang"
-          export CXX="${CLANG_ROOT}/clang++"
-          export HOSTCC="${CLANG_ROOT}/clang"
-          export HOSTCXX="${CLANG_ROOT}/clang++"
-          export LD="${CLANG_ROOT}/ld.lld"
-          export AR="${CLANG_ROOT}/llvm-ar"
-          export NM="${CLANG_ROOT}/llvm-nm"
-          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
-          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
-          export STRIP="${CLANG_ROOT}/llvm-strip"
-          export KBUILD_BUILD_USER="Rebuild By"
-          export KBUILD_BUILD_HOST="Yudharn"
-          export CCACHE_COMPILERCHECK="none"
-          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
-          export CCACHE_NOHASHDIR="true"
-          export CCACHE_NOHARDLINK="true"
-
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
 
           echo "CONFIG_TMPFS_XATTR=y" >> arch/arm64/configs/marble_defconfig
@@ -876,10 +713,6 @@ jobs:
             ZIP_NAME="${ZIP_NAME}-NoMount"
           fi
 
-          if [[ "${{ env.LZ4KD_APPLIED }}" == true ]]; then
-            ZIP_NAME="${ZIP_NAME}-LZ4KD"
-          fi
-
           ZIP_NAME="${ZIP_NAME}-${KERNEL_BASE_VERSION}"
 
           git clone --depth=1 -b Anykernel3 https://github.com/yudharn/AnyKernel3 AnyKernel3
@@ -915,8 +748,7 @@ jobs:
             --arg nomount_commit "${NOMOUNT_COMMIT:-}" \
             --arg nomount_commit_url "${NOMOUNT_COMMIT_URL:-}" \
             --arg nomount_version_tag "${NOMOUNT_VERSION_TAG:-}" \
-            --arg lz4kd_applied "${LZ4KD_APPLIED:-false}" \
-            '{ksu_type:$ksu_type,build_mode:$build_mode,kernel_name:$kernel_name,zip_name:$zip_name,ksu_manager_version:$ksu_manager_version,ksu_manager_commit:$ksu_manager_commit,ksu_manager_commit_url:$ksu_manager_commit_url,kernel_commit:$kernel_commit,kernel_commit_url:$kernel_commit_url,kernel_base_version:$kernel_base_version,clang_version:$clang_version,susfs_commit:$susfs_commit,susfs_commit_url:$susfs_commit_url,susfs_version_tag:$susfs_version_tag,nomount_commit:$nomount_commit,nomount_commit_url:$nomount_commit_url,nomount_version_tag:$nomount_version_tag,lz4kd_applied:$lz4kd_applied}' \
+            '{ksu_type:$ksu_type,build_mode:$build_mode,kernel_name:$kernel_name,zip_name:$zip_name,ksu_manager_version:$ksu_manager_version,ksu_manager_commit:$ksu_manager_commit,ksu_manager_commit_url:$ksu_manager_commit_url,kernel_commit:$kernel_commit,kernel_commit_url:$kernel_commit_url,kernel_base_version:$kernel_base_version,clang_version:$clang_version,susfs_commit:$susfs_commit,susfs_commit_url:$susfs_commit_url,susfs_version_tag:$susfs_version_tag,nomount_commit:$nomount_commit,nomount_commit_url:$nomount_commit_url,nomount_version_tag:$nomount_version_tag}' \
             > "${GITHUB_WORKSPACE}/metadata.json"
 
       - name: Upload build artifact
@@ -991,7 +823,6 @@ jobs:
               NOMOUNT_COMMIT=$(jq -r '.nomount_commit' "$META")
               NOMOUNT_COMMIT_URL=$(jq -r '.nomount_commit_url' "$META")
               NOMOUNT_VERSION_TAG=$(jq -r '.nomount_version_tag' "$META")
-              LZ4KD_APPLIED_ANY=$(jq -r '.lz4kd_applied' "$META")
               FIRST=false
             fi
 
@@ -1058,14 +889,6 @@ jobs:
           rekernel_netlink_checkbox="Supported"
           rekernel_ebpf_checkbox="Supported (daemon+prog attached as release assets)"
 
-          if [[ "${LZ4KD_APPLIED_ANY:-false}" == "true" ]]; then
-            lz4kd_checkbox="Supported (lz4kd via SukiSU_patch, ZRAM default)"
-          elif [[ "${{ inputs.enable_lz4kd }}" == "true" ]]; then
-            lz4kd_checkbox="Requested, but skipped this run (patch didn't apply cleanly - see Compile Kernel log)"
-          else
-            lz4kd_checkbox="Not included"
-          fi
-
           if [[ -n "$NOMOUNT_COMMIT" ]]; then
             if [[ -n "$NOMOUNT_VERSION_TAG" && "$NOMOUNT_VERSION_TAG" != "unknown" && "$NOMOUNT_VERSION_TAG" != "null" ]]; then
               nomount_checkbox="Supported (nomount ${NOMOUNT_VERSION_TAG}@[${NOMOUNT_COMMIT}](${NOMOUNT_COMMIT_URL}))"
@@ -1097,7 +920,6 @@ jobs:
            | ⚙️ Re-Kernel (Netlink) | ${rekernel_netlink_checkbox}
            | ⚙️ Re-Kernel (eBPF) | ${rekernel_ebpf_checkbox}
            | 🗂️ NoMount | ${nomount_checkbox}
-           | 🗜️ LZ4KD (ZRAM) | ${lz4kd_checkbox}
            | 🧩 eBPF | Enabled (BTF/CO-RE, kprobe+uprobe, cgroup+tc hooks) |
            | 🔨 Compiler | ${CLANG_VERSION} |
 
@@ -1121,7 +943,6 @@ jobs:
 
            ---
           " "${ASSETS[@]}"
-
 
 
 
